@@ -1,9 +1,10 @@
 //
 //  LuaLoader.java
-//  TemplateApp
+//  AgeRange
+//
 
 // This corresponds to the name of the Lua library,
-// e.g. [Lua] require "plugin.library"
+// e.g. [Lua] require "plugin.ageRange"
 package plugin.ageRange;
 
 import android.app.Activity;
@@ -14,18 +15,17 @@ import com.ansca.corona.CoronaLua;
 import com.ansca.corona.CoronaRuntime;
 import com.ansca.corona.CoronaRuntimeListener;
 import com.ansca.corona.CoronaRuntimeTask;
-import com.google.android.play.agesignals.AgeSignalsManager;
-import com.google.android.play.agesignals.AgeSignalsManagerFactory;
-import com.google.android.play.agesignals.AgeSignalsRequest;
-import com.google.android.play.agesignals.AgeSignalsResult;
-import com.google.android.play.agesignals.model.AgeSignalsVerificationStatus;
-import com.google.android.gms.tasks.Task;
 import com.naef.jnlua.JavaFunction;
 import com.naef.jnlua.LuaState;
 import com.naef.jnlua.NamedJavaFunction;
 
 import java.util.HashMap;
 import java.util.Map;
+
+import android.database.Cursor;
+import android.net.Uri;
+import org.json.JSONObject;
+import org.json.JSONException;
 
 /**
  * Implements the Lua interface for a Corona plugin.
@@ -43,8 +43,8 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
     private static final String UPDATE_EVENT = "significantUpdateEvent";
     private static final String COMMUNICATION_EVENT = "communicationEvent";
 
-    /** Age Signals Manager */
-    private AgeSignalsManager ageSignalsManager;
+    /** Amazon Age Data API URI */
+    private static final Uri AMAZON_AGE_DATA_URI = Uri.parse("content://amzn_appstore/getUserAgeData");
 
     /**
      * Creates a new Lua interface to this plugin.
@@ -74,23 +74,11 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
         String libName = L.toString( 1 );
         L.register(libName, luaFunctions);
 
-        // Initialize Age Signals Manager
-        CoronaActivity activity = CoronaEnvironment.getCoronaActivity();
-        if (activity != null) {
-            ageSignalsManager = AgeSignalsManagerFactory.create(activity.getApplicationContext());
-        }
-
         return 1;
     }
 
     @Override
-    public void onLoaded(CoronaRuntime runtime) {
-        // Reinitialize manager if needed
-        CoronaActivity activity = CoronaEnvironment.getCoronaActivity();
-        if (activity != null && ageSignalsManager == null) {
-            ageSignalsManager = AgeSignalsManagerFactory.create(activity.getApplicationContext());
-        }
-    }
+    public void onLoaded(CoronaRuntime runtime) {}
 
     @Override
     public void onStarted(CoronaRuntime runtime) {}
@@ -217,107 +205,113 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
     }
 
     /**
-     * Request age range from user using Google's Age Signals API
+     * Request age range from user using Amazon's GetUserAgeData API
      */
     @SuppressWarnings("WeakerAccess")
     public int requestAgeRange(LuaState L) {
         CoronaActivity activity = CoronaEnvironment.getCoronaActivity();
-        if (activity == null || ageSignalsManager == null) {
+        if (activity == null) {
             Map<String, Object> eventData = new HashMap<>();
             eventData.put("isError", true);
             eventData.put("isAvailable", false);
             eventData.put("declined", false);
-            eventData.put("errorMessage", "Age Signals not available");
+            eventData.put("errorMessage", "Activity not available");
             dispatchAgeRangeEvent(eventData);
             return 0;
         }
 
         activity.runOnUiThread(() -> {
-            AgeSignalsRequest request = AgeSignalsRequest.builder().build();
-            Task<AgeSignalsResult> task = ageSignalsManager.checkAgeSignals(request);
+            Cursor cursor = null;
+            try {
+                cursor = activity.getContentResolver().query(
+                        AMAZON_AGE_DATA_URI,
+                        null, null, null, null);
 
-            task.addOnSuccessListener(result -> {
+                if (cursor == null || !cursor.moveToFirst()) {
+                    Map<String, Object> eventData = new HashMap<>();
+                    eventData.put("isError", true);
+                    eventData.put("isAvailable", false);
+                    eventData.put("declined", false);
+                    eventData.put("errorMessage", "Amazon Age Data API not available");
+                    dispatchAgeRangeEvent(eventData);
+                    return;
+                }
+
+                // Get the JSON response from the cursor
+                int dataColumnIndex = cursor.getColumnIndex("data");
+                if (dataColumnIndex == -1) {
+                    // Try getting the first column if "data" doesn't exist
+                    dataColumnIndex = 0;
+                }
+                String jsonResponse = cursor.getString(dataColumnIndex);
+
+                JSONObject json = new JSONObject(jsonResponse);
+                String responseStatus = json.optString("responseStatus", "");
+                String userStatus = json.optString("userStatus", "");
+
                 Map<String, Object> eventData = new HashMap<>();
-                eventData.put("isError", false);
-                eventData.put("isAvailable", true);
-                eventData.put("declined", false);
 
-                int status = result.userStatus();
+                if ("SUCCESS".equals(responseStatus)) {
+                    eventData.put("isError", false);
+                    eventData.put("isAvailable", true);
+                    eventData.put("declined", false);
 
-                // Handle different user statuses
-                if (status == AgeSignalsVerificationStatus.VERIFIED) {
-                    // User is verified as 18+
-                    eventData.put("lowerBound", 18);
-                    eventData.put("upperBound", null); // No upper bound for 18+
-                    eventData.put("hasParentalControls", false);
-                    eventData.put("userStatus", "verified");
-                } else if (status == AgeSignalsVerificationStatus.SUPERVISED ||
-                        status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_PENDING ||
-                        status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_DENIED) {
-                    // Supervised user with age range
-                    Integer ageLower = result.ageLower();
-                    Integer ageUpper = result.ageUpper();
-
-                    if (ageLower != null) {
-                        eventData.put("lowerBound", ageLower);
-                    }
-                    if (ageUpper != null) {
-                        eventData.put("upperBound", ageUpper);
-                    }
-
-                    eventData.put("hasParentalControls", true);
-                    if(status == AgeSignalsVerificationStatus.SUPERVISED){
+                    if ("VERIFIED".equals(userStatus)) {
+                        // User is verified as 18+
+                        eventData.put("lowerBound", json.optInt("ageLower", 18));
+                        // ageUpper is null for 18+ users
+                        eventData.put("hasParentalControls", false);
+                        eventData.put("userStatus", "verified");
+                    } else if ("SUPERVISED".equals(userStatus)) {
+                        // Supervised user (under 18)
+                        if (!json.isNull("ageLower")) {
+                            eventData.put("lowerBound", json.getInt("ageLower"));
+                        }
+                        if (!json.isNull("ageUpper")) {
+                            eventData.put("upperBound", json.getInt("ageUpper"));
+                        }
+                        eventData.put("hasParentalControls", true);
                         eventData.put("userStatus", "supervised");
-                    } else if (status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_PENDING) {
-                        eventData.put("userStatus", "approvalPending");
-                    }else{
-                        eventData.put("userStatus", "approvalDenied");
-                    }
 
-                    // Include additional supervised user info
-                    if (result.installId() != null) {
-                        eventData.put("installId", result.installId());
+                        // Include additional supervised user info
+                        if (!json.isNull("userId")) {
+                            eventData.put("installId", json.getString("userId"));
+                        }
+                        if (!json.isNull("mostRecentApprovalDate")) {
+                            eventData.put("mostRecentApprovalDate", json.getString("mostRecentApprovalDate"));
+                        }
+                    } else {
+                        // Unknown or empty status
+                        eventData.put("userStatus", userStatus.toLowerCase());
                     }
-                    if (result.mostRecentApprovalDate() != null) {
-                        eventData.put("mostRecentApprovalDate", result.mostRecentApprovalDate().getTime());
-                    }
-                } else if (status == AgeSignalsVerificationStatus.UNKNOWN) {
-                    // Unknown status - user needs to verify in Play Store
-                    eventData.put("userStatus", "unknown");
-                    eventData.put("errorMessage", "User age status unknown. Please verify in Play Store.");
                 } else {
-                    // Empty status
-                    eventData.put("userStatus", "empty");
+                    eventData.put("isError", true);
+                    eventData.put("isAvailable", false);
+                    eventData.put("declined", false);
+                    eventData.put("errorMessage", "Amazon Age Data API returned status: " + responseStatus);
                 }
 
                 dispatchAgeRangeEvent(eventData);
-            }).addOnFailureListener(e -> {
+
+            } catch (JSONException e) {
                 Map<String, Object> eventData = new HashMap<>();
                 eventData.put("isError", true);
                 eventData.put("isAvailable", false);
                 eventData.put("declined", false);
-
-                // Parse error code if available
-                String errorMessage = e.getMessage();
-                if (errorMessage != null) {
-                    if (errorMessage.contains("API_NOT_AVAILABLE")) {
-                        eventData.put("errorCode", -1);
-                        eventData.put("errorMessage", "Age Signals API not available. Please update Play Store.");
-                    } else if (errorMessage.contains("PLAY_STORE_NOT_FOUND")) {
-                        eventData.put("errorCode", -2);
-                        eventData.put("errorMessage", "Play Store not found. Please install or enable Play Store.");
-                    } else if (errorMessage.contains("NETWORK_ERROR")) {
-                        eventData.put("errorCode", -3);
-                        eventData.put("errorMessage", "Network error. Please check connection.");
-                    } else {
-                        eventData.put("errorMessage", errorMessage);
-                    }
-                } else {
-                    eventData.put("errorMessage", "Unknown error occurred");
-                }
-
+                eventData.put("errorMessage", "Failed to parse Amazon Age Data response: " + e.getMessage());
                 dispatchAgeRangeEvent(eventData);
-            });
+            } catch (Exception e) {
+                Map<String, Object> eventData = new HashMap<>();
+                eventData.put("isError", true);
+                eventData.put("isAvailable", false);
+                eventData.put("declined", false);
+                eventData.put("errorMessage", "Amazon Age Data API error: " + e.getMessage());
+                dispatchAgeRangeEvent(eventData);
+            } finally {
+                if (cursor != null) {
+                    cursor.close();
+                }
+            }
         });
 
         return 0;
@@ -325,69 +319,29 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
 
     /**
      * Request permission for significant app update
-     * NOTE: On Android, significant changes are managed through Play Console, not at runtime
-     * This function is provided for API compatibility but logs a message
+     * NOTE: On Amazon, significant changes must be submitted through the Amazon Developer Console
+     * This function is provided for API compatibility
      * Parameters: description (string)
      */
     @SuppressWarnings("WeakerAccess")
     public int requestSignificantUpdatePermission(LuaState L) {
         String description = L.checkString(1);
 
-        // On Android, significant changes must be submitted through Play Console
-        // This is a compatibility function that informs developers
         Map<String, Object> eventData = new HashMap<>();
         eventData.put("isError", false);
         eventData.put("description", description);
         eventData.put("platform", "android");
-        eventData.put("store", "google");
-        eventData.put("message", "On Android, significant changes must be submitted through Play Console. " +
-                "This API checks the current approval status instead.");
-
-        // Check current approval status
-        CoronaActivity activity = CoronaEnvironment.getCoronaActivity();
-        if (activity != null && ageSignalsManager != null) {
-            activity.runOnUiThread(() -> {
-                AgeSignalsRequest request = AgeSignalsRequest.builder().build();
-                Task<AgeSignalsResult> task = ageSignalsManager.checkAgeSignals(request);
-
-                task.addOnSuccessListener(result -> {
-                    Map<String, Object> resultData = new HashMap<>(eventData);
-                    int status = result.userStatus();
-
-                    if (status == AgeSignalsVerificationStatus.SUPERVISED) {
-                        resultData.put("approved", true);
-                        if (result.mostRecentApprovalDate() != null) {
-                            resultData.put("mostRecentApprovalDate", result.mostRecentApprovalDate().getTime());
-                        }
-                    } else if (status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_PENDING) {
-                        resultData.put("approved", false);
-                        resultData.put("pending", true);
-                    } else if (status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_DENIED) {
-                        resultData.put("approved", false);
-                        resultData.put("denied", true);
-                    }
-
-                    dispatchUpdateEvent(resultData);
-                }).addOnFailureListener(e -> {
-                    Map<String, Object> errorData = new HashMap<>(eventData);
-                    errorData.put("isError", true);
-                    errorData.put("errorMessage", e.getMessage());
-                    dispatchUpdateEvent(errorData);
-                });
-            });
-        } else {
-            eventData.put("isError", true);
-            eventData.put("errorMessage", "Age Signals Manager not available");
-            dispatchUpdateEvent(eventData);
-        }
+        eventData.put("store", "amazon");
+        eventData.put("message", "On Amazon, significant changes must be submitted through the Amazon Developer Console. " +
+                "This API is for compatibility only.");
+        dispatchUpdateEvent(eventData);
 
         return 0;
     }
 
     /**
      * Request communication permission
-     * NOTE: Android Age Signals API doesn't have a direct equivalent to iOS PermissionKit
-     * for communication requests. This function checks if the user is supervised.
+     * Uses Amazon's GetUserAgeData API to check if the user is supervised
      * Parameters: handle (string), handleKind (string)
      */
     @SuppressWarnings("WeakerAccess")
@@ -399,72 +353,90 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
         eventData.put("handle", handle);
         eventData.put("handleKind", handleKind);
         eventData.put("platform", "android");
-        eventData.put("store", "google");
-        eventData.put("message", "Android Age Signals API doesn't have direct communication approval. " +
+        eventData.put("store", "amazon");
+        eventData.put("message", "Amazon Age Data API doesn't have direct communication approval. " +
                 "Check user supervision status instead.");
 
         CoronaActivity activity = CoronaEnvironment.getCoronaActivity();
-        if (activity != null && ageSignalsManager != null) {
-            activity.runOnUiThread(() -> {
-                AgeSignalsRequest request = AgeSignalsRequest.builder().build();
-                Task<AgeSignalsResult> task = ageSignalsManager.checkAgeSignals(request);
+        if (activity == null) {
+            eventData.put("isError", true);
+            eventData.put("errorMessage", "Activity not available");
+            dispatchCommunicationEvent(eventData);
+            return 0;
+        }
 
-                task.addOnSuccessListener(result -> {
-                    Map<String, Object> resultData = new HashMap<>(eventData);
-                    int status = result.userStatus();
+        activity.runOnUiThread(() -> {
+            Cursor cursor = null;
+            try {
+                cursor = activity.getContentResolver().query(
+                        AMAZON_AGE_DATA_URI,
+                        null, null, null, null);
 
-                    // For supervised users, communication should be restricted
-                    if (status == AgeSignalsVerificationStatus.SUPERVISED ||
-                            status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_PENDING ||
-                            status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_DENIED) {
+                if (cursor == null || !cursor.moveToFirst()) {
+                    Map<String, Object> errorData = new HashMap<>(eventData);
+                    errorData.put("isError", true);
+                    errorData.put("errorMessage", "Amazon Age Data API not available");
+                    dispatchCommunicationEvent(errorData);
+                    return;
+                }
+
+                int dataColumnIndex = cursor.getColumnIndex("data");
+                if (dataColumnIndex == -1) {
+                    dataColumnIndex = 0;
+                }
+                String jsonResponse = cursor.getString(dataColumnIndex);
+
+                JSONObject json = new JSONObject(jsonResponse);
+                String responseStatus = json.optString("responseStatus", "");
+                String userStatus = json.optString("userStatus", "");
+
+                Map<String, Object> resultData = new HashMap<>(eventData);
+
+                if ("SUCCESS".equals(responseStatus)) {
+                    if ("SUPERVISED".equals(userStatus)) {
                         resultData.put("isError", false);
                         resultData.put("isSupervised", true);
-                        if(status == AgeSignalsVerificationStatus.SUPERVISED){
-                            resultData.put("userStatus", "supervised");
-                        } else if (status == AgeSignalsVerificationStatus.SUPERVISED_APPROVAL_PENDING) {
-                            resultData.put("userStatus", "approvalPending");
-                        }else{
-                            resultData.put("userStatus", "approvalDenied");
-                        }
-                        // App should implement its own communication approval logic
+                        resultData.put("userStatus", "supervised");
                         resultData.put("requiresParentalApproval", true);
                     } else {
                         resultData.put("isError", false);
                         resultData.put("isSupervised", false);
                         resultData.put("requiresParentalApproval", false);
                     }
+                } else {
+                    resultData.put("isError", true);
+                    resultData.put("errorMessage", "Amazon Age Data API returned status: " + responseStatus);
+                }
 
-                    dispatchCommunicationEvent(resultData);
-                }).addOnFailureListener(e -> {
-                    Map<String, Object> errorData = new HashMap<>(eventData);
-                    errorData.put("isError", true);
-                    errorData.put("errorMessage", e.getMessage());
-                    dispatchCommunicationEvent(errorData);
-                });
-            });
-        } else {
-            eventData.put("isError", true);
-            eventData.put("errorMessage", "Age Signals Manager not available");
-            dispatchCommunicationEvent(eventData);
-        }
+                dispatchCommunicationEvent(resultData);
+
+            } catch (Exception e) {
+                Map<String, Object> errorData = new HashMap<>(eventData);
+                errorData.put("isError", true);
+                errorData.put("errorMessage", "Amazon Age Data API error: " + e.getMessage());
+                dispatchCommunicationEvent(errorData);
+            } finally {
+                if (cursor != null) {
+                    cursor.close();
+                }
+            }
+        });
 
         return 0;
     }
 
     /**
      * Start listening for communication responses
-     * NOTE: Android doesn't have a real-time listener for parental responses like iOS
+     * NOTE: Amazon doesn't have a real-time listener for parental responses
      * This is a no-op function for API compatibility
      */
     @SuppressWarnings({"WeakerAccess", "SameReturnValue"})
     public int startListeningForCommunicationResponses(LuaState L) {
-        // Android Age Signals API doesn't support real-time response listening
-        // Apps need to call checkAgeSignals() to get updated status
         Map<String, Object> eventData = new HashMap<>();
         eventData.put("isError", false);
         eventData.put("platform", "android");
-        eventData.put("store", "google");
-        eventData.put("message", "Android doesn't support real-time response listening. " +
+        eventData.put("store", "amazon");
+        eventData.put("message", "Amazon doesn't support real-time response listening. " +
                 "Call requestAgeRange() periodically to check for status updates.");
         dispatchCommunicationEvent(eventData);
 
