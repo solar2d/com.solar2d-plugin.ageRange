@@ -100,32 +100,26 @@ class MainSwift: NSObject {
     
     // MARK: - Significant Update Permission
     
-    @available(iOS 26.1, *)
+    @available(iOS 26.2, *)
     @MainActor
     @objc func requestSignificantUpdatePermission(description: String, viewController: UIViewController) {
         Task {
             do {
                 // Create a significant app update topic
+                let topic = SignificantAppUpdateTopic(description: description)
+                let question = PermissionQuestion<SignificantAppUpdateTopic>(significantAppUpdateTopic: topic)
                 
-//                SignificantAppUpdate.init(
-//                let question = PermissionQuestion<SignificantAppUpdateTopic>(significantAppUpdateTopic: topic)
-//                
-//                // Use predefined approve/decline choices
-//                question.choices = [.approve, .decline]
-//                question.defaultChoice = .decline
-//                
-//                // Send the question - this triggers the Messages flow
-//                try await CommunicationLimits.current.ask(question, in: viewController)
-//                
-//                // The ask method completes when the question is sent, not when answered
-//                // Responses come through the updates AsyncSequence
-//                let eventData: [String: Any] = [
-//                    "isError": false,
-//                    "description": description,
-//                    "questionSent": true
-//                ]
+                // Send the question - this triggers the Messages flow
+                try await AskCenter.shared.ask(question, in: viewController)
                 
-                //self.dispatchUpdateEvent(eventData: eventData)
+                // The ask method completes when the question is sent, not when answered
+                let eventData: [String: Any] = [
+                    "isError": false,
+                    "description": description,
+                    "questionSent": true
+                ]
+                
+                self.dispatchUpdateEvent(eventData: eventData)
                 
             } catch {
                 let eventData: [String: Any] = [
@@ -141,7 +135,7 @@ class MainSwift: NSObject {
     
     // MARK: - Communication Permission
     
-    @available(iOS 26.1, tvOS 26.1, *)
+    @available(iOS 26.2, tvOS 26.2, *)
     @MainActor
     @objc func requestCommunicationPermission(handle: String, handleKind: String, viewController: UIViewController) {
         Task {
@@ -157,13 +151,13 @@ class MainSwift: NSObject {
                 }
                 
                 let commHandle = CommunicationHandle(value: handle, kind: handleType)
+                
+                // Use the convenience initializer for single handle
                 let question = PermissionQuestion<CommunicationTopic>(handle: commHandle)
                 
-                // Send the question - this triggers the Messages flow
-                try await CommunicationLimits.current.ask(question, in: viewController)
+                // Send the question using AskCenter
+                try await AskCenter.shared.ask(question, in: viewController)
                 
-                // The ask method completes when the question is sent, not when answered
-                // Responses come through the updates AsyncSequence
                 let eventData: [String: Any] = [
                     "isError": false,
                     "handle": handle,
@@ -186,15 +180,17 @@ class MainSwift: NSObject {
     
     // MARK: - Listen for Communication Responses
     
-    @available(iOS 26.1, tvOS 26.1, *)
+    @available(iOS 26.2, tvOS 26.2, *)
     @MainActor
     @objc func startListeningForCommunicationResponses() {
         // Cancel existing task if any
         responseTask?.cancel()
         
         responseTask = Task {
-            let updates = CommunicationLimits.current.updates
-            for await response in updates {
+            // Get the async sequence of responses for CommunicationTopic
+            let responses = AskCenter.shared.responses(for: CommunicationTopic.self)
+            
+            for await response in responses {
                 guard !Task.isCancelled else { break }
                 
                 var eventData: [String: Any] = [
@@ -202,7 +198,7 @@ class MainSwift: NSObject {
                     "isBackgroundResponse": true
                 ]
                 
-                // Only include answer information
+                // Access the choice's answer
                 switch response.choice.answer {
                 case .approval:
                     eventData["approved"] = true
@@ -214,6 +210,9 @@ class MainSwift: NSObject {
                     eventData["approved"] = false
                 }
                 
+                // You can also access the original question if needed
+                // let originalQuestion = response.question
+                
                 self.dispatchCommunicationEvent(eventData: eventData)
             }
         }
@@ -221,18 +220,19 @@ class MainSwift: NSObject {
     
     // MARK: - Dispatch Events
     private func dispatchEvent(eventData: [String: Any]) {
-        wrapper?.dispatchEvent(eventData as NSDictionary as? [AnyHashable : Any])
+        wrapper?.dispatchEvent(eventData as [AnyHashable: Any])
     }
     
     private func dispatchUpdateEvent(eventData: [String: Any]) {
-        wrapper?.dispatchUpdateEvent(eventData as NSDictionary as! [AnyHashable : Any])
+        wrapper?.dispatchUpdateEvent(eventData as [AnyHashable: Any])
     }
     
     private func dispatchCommunicationEvent(eventData: [String: Any]) {
-        wrapper?.dispatchCommunicationEvent(eventData as NSDictionary as! [AnyHashable : Any])
+        wrapper?.dispatchCommunicationEvent(eventData as [AnyHashable: Any])
     }
     
     deinit {
         responseTask?.cancel()
     }
 }
+
