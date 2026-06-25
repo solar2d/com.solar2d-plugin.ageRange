@@ -242,7 +242,17 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
                 eventData.put("isAvailable", true);
                 eventData.put("declined", false);
 
-                int status = result.userStatus();
+                // userStatus() returns a nullable Integer. It is null when the
+                // service has no age signal for this account (e.g. a standard
+                // account that hasn't been through Play age verification).
+                // Unboxing null into an int crashes, so handle it explicitly.
+                Integer statusObj = result.userStatus();
+                if (statusObj == null) {
+                    eventData.put("userStatus", "empty");
+                    dispatchAgeRangeEvent(eventData);
+                    return;
+                }
+                int status = statusObj;
 
                 // Handle different user statuses
                 if (status == AgeSignalsVerificationStatus.VERIFIED) {
@@ -352,7 +362,10 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
 
                 task.addOnSuccessListener(result -> {
                     Map<String, Object> resultData = new HashMap<>(eventData);
-                    int status = result.userStatus();
+                    // userStatus() may be null; treat that as UNKNOWN so we
+                    // never unbox null into an int.
+                    Integer statusObj = result.userStatus();
+                    int status = (statusObj != null) ? statusObj : AgeSignalsVerificationStatus.UNKNOWN;
 
                     if (status == AgeSignalsVerificationStatus.SUPERVISED) {
                         resultData.put("approved", true);
@@ -411,7 +424,10 @@ public class LuaLoader implements JavaFunction, CoronaRuntimeListener {
 
                 task.addOnSuccessListener(result -> {
                     Map<String, Object> resultData = new HashMap<>(eventData);
-                    int status = result.userStatus();
+                    // userStatus() may be null; treat that as UNKNOWN so we
+                    // never unbox null into an int.
+                    Integer statusObj = result.userStatus();
+                    int status = (statusObj != null) ? statusObj : AgeSignalsVerificationStatus.UNKNOWN;
 
                     // For supervised users, communication should be restricted
                     if (status == AgeSignalsVerificationStatus.SUPERVISED ||
