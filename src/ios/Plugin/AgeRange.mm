@@ -333,6 +333,8 @@ AgeRange::init( lua_State *L )
     if (CoronaLuaIsListener(L, 1, kEvent)) {
         CoronaLuaRef listener = CoronaLuaNewRef(L, 1);
         library->Initialize(listener);
+    }else{
+        CoronaLuaWarning(L, "Age Range Request Age Range Only Supported on iOS 26");
     }
 
     return 0;
@@ -359,8 +361,12 @@ AgeRange::requestAgeRange( lua_State *L )
     if (lua_isnumber(L, 3)) {
         gate3 = (int)lua_tointeger(L, 3);
     }
+    if (@available(iOS 26, *)) {
+        [mainSwift requestAgeRangeWithGate1:gate1 gate2:gate2 gate3:gate3 viewController:root];
+    }else{
+        CoronaLuaWarning(L, "Age Range Request Age Range Only Supported on iOS 26");
+    }
     
-    [mainSwift requestAgeRangeWithGate1:gate1 gate2:gate2 gate3:gate3 viewController:root];
 
     return 0;
 }
@@ -379,8 +385,11 @@ AgeRange::requestSignificantUpdatePermission( lua_State *L )
     }
     
     NSString *updateDescription = [NSString stringWithUTF8String:description];
-    
-    [mainSwift requestSignificantUpdatePermissionWithDescription:updateDescription viewController:root];
+    if (@available(iOS 26, *)) {
+        [mainSwift requestSignificantUpdatePermissionWithDescription:updateDescription viewController:root];
+    }else{
+        CoronaLuaWarning(L, "Age Range Request Significant Update Permission Only Supported on iOS 26.2");
+    }
 
     return 0;
 }
@@ -407,8 +416,11 @@ AgeRange::requestCommunicationPermission( lua_State *L )
         handleKind = lua_tostring(L, 2);
     }
     NSString *handleKindValue = [NSString stringWithUTF8String:handleKind];
-    
-    [mainSwift requestCommunicationPermissionWithHandle:handleValue handleKind:handleKindValue viewController:root];
+    if (@available(iOS 26, *)) {
+        [mainSwift requestCommunicationPermissionWithHandle:handleValue handleKind:handleKindValue viewController:root];
+    }else{
+        CoronaLuaWarning(L, "Age Range Request Communication Permission Only Supported on iOS 26.2");
+    }
 
     return 0;
 }
@@ -416,7 +428,11 @@ AgeRange::requestCommunicationPermission( lua_State *L )
 int
 AgeRange::startListeningForCommunicationResponses( lua_State *L )
 {
-    [mainSwift startListeningForCommunicationResponses];
+    if (@available(iOS 26.2, *)) {
+        [mainSwift startListeningForCommunicationResponses];
+    }else{
+        CoronaLuaWarning(L, "Age Range Start Listening Only Support on iOS 26.2+");
+    }
     return 0;
 }
 
